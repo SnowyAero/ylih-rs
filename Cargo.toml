@@ -1,0 +1,23 @@
+[package]
+name = "ylih"
+version = "2.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Your Life in Headphones - Bluetooth Headphone Lifespan Tracker (GTK3 + TUI + Daemon)"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+zbus = "4.0"
+gtk = "0.18"
+glib = "0.18"
+gio = "0.18"
+ratatui = "0.26"
+crossterm = "0.27"
+
+[profile.release]
+opt-level = 2          # Optimización alta pero mucho más rápida de compilar que el nivel 3
+codegen-units = 4      # Divide la compilación de tu código exactamente en tus 4 núcleos
+strip = true           # Elimina símbolos de debug al vuelo (el binario queda pesando ~2 MB en vez de 15 MB)
+lto = false            # Desactiva Link-Time Optimization para que no congele el CPU al final

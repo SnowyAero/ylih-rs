@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=YLIH
+GenericName=Monitor de Vida de Auriculares
+Comment=Registra las horas de uso, batería y códec de tus auriculares Bluetooth
+Exec=ylih
+Icon=audio-headphones
+Terminal=false
+Categories=AudioVideo;Audio;Utility;GTK;
+Keywords=bluetooth;headphones;battery;auriculares;ylih;
+StartupWMClass=ylih
