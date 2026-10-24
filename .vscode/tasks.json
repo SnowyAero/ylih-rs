@@ -1,0 +1,27 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "📦 Build & Package YLIH v2.2.0-preview (All)",
+            "type": "shell",
+            "command": "./scripts/build_preview.sh",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": "$rustc"
+        },
+        {
+            "label": "⚡ Compile Release Only (cargo build)",
+            "type": "shell",
+            "command": "cargo build --release -j 4",
+            "group": "build",
+            "problemMatcher": "$rustc"
+        }
+    ]
+}
