@@ -57,6 +57,8 @@ pub struct DeviceRecord {
     pub real_name: String,
     #[serde(default = "default_conn_type")]
     pub conn_type: String,
+    #[serde(default)]
+    pub custom_image: Option<String>,
     pub lifetime_connected_seconds: u64,
     pub lifetime_listening_seconds: u64,
     pub lifetime_connected_human: String,
@@ -87,6 +89,13 @@ pub struct Database {
 pub fn base_data_dir() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".local/share/ylih")
+}
+
+pub fn applogs_dir_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
+    let p = PathBuf::from(home).join(".config/ylih-rs/applogs");
+    let _ = fs::create_dir_all(&p);
+    p
 }
 
 pub fn config_file_path() -> PathBuf {
@@ -144,7 +153,6 @@ impl Tracker {
         let cfg_path = config_file_path();
         let legacy_path = legacy_log_path();
 
-        // 1. Migración automática desde ylih_log.json (v2.1.x -> v2.2.0) si existe y devices/ está vacío
         let dir_is_empty = fs::read_dir(&dev_dir)
             .map(|mut d| d.next().is_none())
             .unwrap_or(true);
@@ -167,13 +175,11 @@ impl Tracker {
             }
         }
 
-        // 2. Cargar config.json
         let settings: Settings = fs::read_to_string(&cfg_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
 
-        // 3. Cargar cada archivo individual en ~/.local/share/ylih/devices/*.json
         let mut devices = BTreeMap::new();
         if let Ok(entries) = fs::read_dir(&dev_dir) {
             for entry in entries.flatten() {
@@ -204,7 +210,6 @@ impl Tracker {
         let dev_dir = devices_dir_path();
         let _ = fs::create_dir_all(&dev_dir);
 
-        // Guardar config.json de forma atómica
         let cfg_path = config_file_path();
         let cfg_tmp = cfg_path.with_extension("json.tmp");
         if let Ok(cfg_json) = serde_json::to_string_pretty(&self.db.settings) {
@@ -213,7 +218,6 @@ impl Tracker {
             }
         }
 
-        // Guardar cada auricular en su propio archivo .json individual
         for (id, dev) in &self.db.devices {
             let mut record = dev.clone();
             record.id = id.clone();
@@ -225,6 +229,19 @@ impl Tracker {
                 }
             }
         }
+    }
+
+    pub fn delete_device(&mut self, id: &str) -> Result<(), String> {
+        if let Some(dev) = self.db.devices.get(id) {
+            if dev.currently_connected {
+                return Err("Device is currently connected".into());
+            }
+        }
+        self.db.devices.remove(id);
+        let file_path = devices_dir_path().join(sanitize_id_filename(id));
+        let _ = fs::remove_file(file_path);
+        self.save_db();
+        Ok(())
     }
 
     pub fn sanitize_db(&mut self) {
@@ -246,24 +263,46 @@ impl Tracker {
             }
         }
 
+        // Corregir falso pico de volumen en t_sec=0 cuando PipeWire aún reportaba el volumen del altavoz interno
         for dev in self.db.devices.values_mut() {
             for sess in &mut dev.sessions {
                 if sess.samples.len() >= 2 {
-                    let first_bat_none = sess.samples[0].battery.is_none();
-                    let second_has_bat = sess.samples[1].battery.is_some();
-                    if first_bat_none && second_has_bat && sess.samples[1].t_sec <= 15 {
-                        if let Some(real_v0) = sess.samples[1].volume {
-                            sess.samples[0].volume = Some(real_v0);
-                            sess.volume_start = Some(real_v0);
-                            let max_v = sess
-                                .samples
-                                .iter()
-                                .filter_map(|p| p.volume)
-                                .max()
-                                .unwrap_or(real_v0);
-                            sess.volume_max = Some(max_v);
-                            sess.volume_increased = max_v > real_v0;
+                    let p0_t = sess.samples[0].t_sec;
+                    let p1_t = sess.samples[1].t_sec;
+                    if p0_t == 0 && p1_t <= 12 {
+                        if let (Some(v0), Some(v1)) = (sess.samples[0].volume, sess.samples[1].volume) {
+                            let bat_delayed = sess.samples[0].battery.is_none() && sess.samples[1].battery.is_some();
+                            let handshake_jump = v1.abs_diff(v0) >= 10;
+                            if bat_delayed || handshake_jump {
+                                sess.samples[0].volume = Some(v1);
+                                if sess.samples[0].battery.is_none() {
+                                    sess.samples[0].battery = sess.samples[1].battery;
+                                }
+                                sess.volume_start = Some(v1);
+                            }
                         }
+                    }
+                    if let Some(v_init) = sess.volume_start {
+                        let max_v = sess
+                            .samples
+                            .iter()
+                            .filter_map(|p| p.volume)
+                            .max()
+                            .unwrap_or(v_init);
+                        let vols: Vec<u64> = sess
+                            .samples
+                            .iter()
+                            .filter_map(|p| p.volume.map(|v| v as u64))
+                            .collect();
+                        if !vols.is_empty() {
+                            sess.volume_avg = Some((vols.iter().sum::<u64>() / vols.len() as u64) as u8);
+                        }
+                        sess.volume_max = Some(max_v);
+                        // Solo marcar incremento si el usuario subió el volumen después de los primeros 12s de handshake
+                        sess.volume_increased = sess
+                            .samples
+                            .iter()
+                            .any(|p| p.t_sec > 12 && p.volume.map(|v| v > v_init).unwrap_or(false));
                     }
                 }
             }
@@ -296,7 +335,6 @@ impl Tracker {
         let content = fs::read_to_string(ext_path).map_err(|e| e.to_string())?;
         let mut imported = 0;
 
-        // Soportar tanto importar un archivo de dispositivo individual como una base completa
         if let Ok(single_dev) = serde_json::from_str::<DeviceRecord>(&content) {
             if !single_dev.id.is_empty() || !single_dev.sessions.is_empty() {
                 let id = if single_dev.id.is_empty() {
@@ -342,9 +380,11 @@ impl Tracker {
     }
 
     pub fn tick(&mut self, initial: bool) {
-        // Recargar ajustes por si fueron cambiados desde la UI mientras el demonio corre
         if let Ok(cfg_str) = fs::read_to_string(config_file_path()) {
             if let Ok(latest_cfg) = serde_json::from_str::<Settings>(&cfg_str) {
+                if latest_cfg.language != self.db.settings.language {
+                    self.i18n = I18n::new(&latest_cfg.language);
+                }
                 self.db.settings = latest_cfg;
             }
         }
@@ -385,6 +425,7 @@ impl Tracker {
                     name: info.alias.clone(),
                     real_name: info.real_name.clone(),
                     conn_type: info.conn_type.clone(),
+                    custom_image: None,
                     lifetime_connected_seconds: 0,
                     lifetime_listening_seconds: 0,
                     lifetime_connected_human: "0m 00s".into(),
@@ -458,7 +499,6 @@ impl Tracker {
                     active.connected_human = format_short(active.connected_seconds);
                     active.listening_human = format_short(active.listening_seconds);
 
-                    let bat_just_arrived = active.battery_start.is_none() && info.battery.is_some();
                     if let Some(bat) = info.battery {
                         if active.battery_start.is_none() {
                             active.battery_start = Some(bat);
@@ -466,30 +506,33 @@ impl Tracker {
                         active.battery_end = Some(bat);
                     }
 
+                    // Ventana de estabilización de PipeWire (primeros 12s):
+                    // Si el volumen inicial era del altavoz interno y salta al nivel real del casco Bluetooth, recalibrar base.
                     if let Some(vol) = current_vol {
-                        if active.connected_seconds <= 15
-                            && (bat_just_arrived
-                                || active.volume_start.map(|vs| vol < vs).unwrap_or(true))
-                        {
-                            active.volume_start = Some(vol);
-                            active.volume_max = Some(vol);
-                            active.volume_increased = false;
-                            if let Some(first_sample) = active.samples.first_mut() {
-                                if first_sample.t_sec == 0 {
-                                    first_sample.volume = Some(vol);
-                                    if first_sample.battery.is_none() {
-                                        first_sample.battery = info.battery;
+                        if active.connected_seconds <= 12 {
+                            let jump = active
+                                .volume_start
+                                .map(|vs| vol.abs_diff(vs) >= 8)
+                                .unwrap_or(true);
+                            if jump || active.samples.len() <= 2 {
+                                active.volume_start = Some(vol);
+                                active.volume_max = Some(vol);
+                                active.volume_increased = false;
+                                for sp in active.samples.iter_mut() {
+                                    sp.volume = Some(vol);
+                                    if sp.battery.is_none() {
+                                        sp.battery = info.battery;
                                     }
                                 }
                             }
+                        } else {
+                            let v_start = *active.volume_start.get_or_insert(vol);
+                            if vol > v_start {
+                                active.volume_increased = true;
+                            }
+                            let v_max = active.volume_max.unwrap_or(vol).max(vol);
+                            active.volume_max = Some(v_max);
                         }
-
-                        let v_start = *active.volume_start.get_or_insert(vol);
-                        if vol > v_start {
-                            active.volume_increased = true;
-                        }
-                        let v_max = active.volume_max.unwrap_or(vol).max(vol);
-                        active.volume_max = Some(v_max);
                     }
 
                     let should_sample = active
@@ -534,8 +577,11 @@ impl Tracker {
 }
 
 pub fn write_debug_log(path: &PathBuf) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
     let mut report = String::new();
-    report.push_str("=== YLIH-RS v2.2.0 DEBUG REPORT ===\n");
+    report.push_str("=== YLIH-RS v2.2.0-preview2 DEBUG REPORT ===\n");
     report.push_str(&format!("Fecha: {}\n\n", Local::now()));
 
     let db_tmp = Tracker::load_modular_db();

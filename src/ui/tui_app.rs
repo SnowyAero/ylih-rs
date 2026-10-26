@@ -705,12 +705,12 @@ pub fn run_tui(mut tracker: Tracker) -> Result<(), Box<dyn std::error::Error>> {
                                     status_msg = tracker.i18n.t("set.default_ok").to_string();
                                 }
                                 13 => {
-                                    let out_file = PathBuf::from(format!(
+                                    let out_file = crate::database::applogs_dir_path().join(format!(
                                         "ylih_debug_{}.log",
                                         Local::now().format("%Y%m%d_%H%M%S")
                                     ));
                                     if write_debug_log(&out_file).is_ok() {
-                                        status_msg = format!("🛠 ./{}", out_file.display());
+                                        status_msg = format!("🛠 {}", out_file.display());
                                     }
                                 }
                                 _ => {}

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION="2.2.0-preview"
+VERSION="2.2.0-preview2"
 echo "🚀 [1/5] Compilando YLIH v${VERSION} en modo release..."
 cargo build --release -j 2
 
@@ -54,7 +54,7 @@ cp ylih ~/.local/bin/ylih
 chmod +x ~/.local/bin/ylih
 cp ylih.desktop ~/.local/share/applications/ylih.desktop
 cp locales/*.pak ~/.local/share/ylih/locales/
-echo "✔ YLIH v2.2.0-preview instalado correctamente en ~/.local/bin/ylih"
+echo "✔ YLIH v2.2.0-preview2 instalado correctamente en ~/.local/bin/ylih"
 INSTALL
 chmod +x "dist/ylih-${VERSION}-linux-x86_64/install.sh"
 

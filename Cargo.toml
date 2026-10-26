@@ -1,6 +1,6 @@
 [package]
 name = "ylih"
-version = "2.2.0-preview"
+version = "2.2.0-preview2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Your Life in Headphones - Bluetooth Headphone Lifespan Tracker (GTK3 + TUI + Daemon)"
