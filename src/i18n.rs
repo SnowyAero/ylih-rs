@@ -6,6 +6,7 @@ const EN_PAK_EMBED: &str = include_str!("../locales/en.pak");
 
 #[derive(Clone, Debug)]
 pub struct I18n {
+    #[allow(dead_code)]
     pub lang_code: String,
     map: HashMap<String, String>,
 }

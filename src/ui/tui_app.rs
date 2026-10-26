@@ -25,7 +25,6 @@ use ratatui::{
 };
 use std::{
     io::stdout,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 

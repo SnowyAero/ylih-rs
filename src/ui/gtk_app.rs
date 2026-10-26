@@ -9,7 +9,7 @@ use crate::{
     ui::{compute_history_buckets, HistoryRange},
 };
 use chrono::Local;
-use gtk::prelude::*;
+use gtk::{cairo, gdk, gdk_pixbuf, prelude::*};
 use std::{cell::RefCell, collections::HashSet, path::Path, rc::Rc, time::Duration};
 
 fn icon_label_row(icon_name: &str, markup: &str) -> gtk::Box {

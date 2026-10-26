@@ -71,7 +71,7 @@ fn parse_u8_from_zvariant(val: &OwnedValue) -> Option<u8> {
     if let Ok(v) = u8::try_from(val) {
         return Some(v.min(100));
     }
-    if let Ok(v) = zbus::zvariant::Value::try_from(val.clone()) {
+    if let Ok(v) = zbus::zvariant::Value::try_from(val) {
         match v {
             zbus::zvariant::Value::U8(x) => return Some(x.min(100)),
             zbus::zvariant::Value::U16(x) => return Some((x as u8).min(100)),
