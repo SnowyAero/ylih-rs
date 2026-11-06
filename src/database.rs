@@ -91,6 +91,12 @@ pub fn base_data_dir() -> PathBuf {
     PathBuf::from(home).join(".local/share/ylih")
 }
 
+pub fn icons_dir_path() -> PathBuf {
+    let p = base_data_dir().join("icons");
+    let _ = fs::create_dir_all(&p);
+    p
+}
+
 pub fn applogs_dir_path() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".into());
     let p = PathBuf::from(home).join(".config/ylih-rs/applogs");
@@ -110,12 +116,22 @@ pub fn legacy_log_path() -> PathBuf {
     base_data_dir().join("ylih_log.json")
 }
 
-pub fn sanitize_id_filename(id: &str) -> String {
-    let clean: String = id
-        .chars()
+pub fn sanitize_id_stem(id: &str) -> String {
+    id.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    format!("{}.json", clean)
+        .collect()
+}
+
+pub fn sanitize_id_filename(id: &str) -> String {
+    format!("{}.json", sanitize_id_stem(id))
+}
+
+pub fn is_daemon_active() -> bool {
+    Command::new("systemctl")
+        .args(["--user", "is-active", "ylih.service"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+        .unwrap_or(false)
 }
 
 pub struct Tracker {
@@ -143,6 +159,14 @@ impl Tracker {
 
     pub fn reload_i18n(&mut self) {
         self.i18n = I18n::new(&self.db.settings.language);
+    }
+
+    pub fn sync_from_disk(&mut self) {
+        let latest = Self::load_modular_db();
+        if latest.settings.language != self.db.settings.language {
+            self.i18n = I18n::new(&latest.settings.language);
+        }
+        self.db = latest;
     }
 
     pub fn load_modular_db() -> Database {
@@ -240,6 +264,8 @@ impl Tracker {
         self.db.devices.remove(id);
         let file_path = devices_dir_path().join(sanitize_id_filename(id));
         let _ = fs::remove_file(file_path);
+        let icon_path = icons_dir_path().join(format!("{}.png", sanitize_id_stem(id)));
+        let _ = fs::remove_file(icon_path);
         self.save_db();
         Ok(())
     }
@@ -263,7 +289,6 @@ impl Tracker {
             }
         }
 
-        // Corregir falso pico de volumen en t_sec=0 cuando PipeWire aún reportaba el volumen del altavoz interno
         for dev in self.db.devices.values_mut() {
             for sess in &mut dev.sessions {
                 if sess.samples.len() >= 2 {
@@ -298,7 +323,6 @@ impl Tracker {
                             sess.volume_avg = Some((vols.iter().sum::<u64>() / vols.len() as u64) as u8);
                         }
                         sess.volume_max = Some(max_v);
-                        // Solo marcar incremento si el usuario subió el volumen después de los primeros 12s de handshake
                         sess.volume_increased = sess
                             .samples
                             .iter()
@@ -389,6 +413,27 @@ impl Tracker {
             }
         }
 
+        // Sincronizar metadatos editados en la UI (custom_image y borrados en disco) antes de actualizar
+        let dev_dir = devices_dir_path();
+        let mut deleted_ids = Vec::new();
+        for (id, dev) in self.db.devices.iter_mut() {
+            let fpath = dev_dir.join(sanitize_id_filename(id));
+            if fpath.exists() {
+                if let Ok(content) = fs::read_to_string(&fpath) {
+                    if let Ok(disk_dev) = serde_json::from_str::<DeviceRecord>(&content) {
+                        if disk_dev.custom_image.is_some() {
+                            dev.custom_image = disk_dev.custom_image;
+                        }
+                    }
+                }
+            } else if !initial && !dev.currently_connected {
+                deleted_ids.push(id.clone());
+            }
+        }
+        for id in deleted_ids {
+            self.db.devices.remove(&id);
+        }
+
         let elapsed = if initial {
             0
         } else {
@@ -416,6 +461,13 @@ impl Tracker {
         }
 
         for (id, info) in detected {
+            let icon_fallback = icons_dir_path().join(format!("{}.png", sanitize_id_stem(&id)));
+            let default_img = if icon_fallback.exists() {
+                icon_fallback.to_str().map(|s| s.to_string())
+            } else {
+                None
+            };
+
             let dev = self
                 .db
                 .devices
@@ -425,7 +477,7 @@ impl Tracker {
                     name: info.alias.clone(),
                     real_name: info.real_name.clone(),
                     conn_type: info.conn_type.clone(),
-                    custom_image: None,
+                    custom_image: default_img.clone(),
                     lifetime_connected_seconds: 0,
                     lifetime_listening_seconds: 0,
                     lifetime_connected_human: "0m 00s".into(),
@@ -436,6 +488,10 @@ impl Tracker {
                     current_codec: info.codec.clone(),
                     current_volume: current_vol,
                 });
+
+            if dev.custom_image.is_none() && default_img.is_some() {
+                dev.custom_image = default_img;
+            }
 
             dev.id = id;
             dev.name = info.alias;
@@ -506,8 +562,6 @@ impl Tracker {
                         active.battery_end = Some(bat);
                     }
 
-                    // Ventana de estabilización de PipeWire (primeros 12s):
-                    // Si el volumen inicial era del altavoz interno y salta al nivel real del casco Bluetooth, recalibrar base.
                     if let Some(vol) = current_vol {
                         if active.connected_seconds <= 12 {
                             let jump = active
@@ -581,7 +635,7 @@ pub fn write_debug_log(path: &PathBuf) -> std::io::Result<()> {
         let _ = fs::create_dir_all(parent);
     }
     let mut report = String::new();
-    report.push_str("=== YLIH-RS v2.2.0-preview2 DEBUG REPORT ===\n");
+    report.push_str("=== YLIH-RS v2.2.0-preview3 DEBUG REPORT ===\n");
     report.push_str(&format!("Fecha: {}\n\n", Local::now()));
 
     let db_tmp = Tracker::load_modular_db();
@@ -600,7 +654,11 @@ pub fn write_debug_log(path: &PathBuf) -> std::io::Result<()> {
         report.push_str("\n\n");
     }
 
-    if let Ok(out) = Command::new("wpctl").arg("status").output() {
+    if let Ok(out) = Command::new("wpctl")
+        .arg("status")
+        .env("COLUMNS", "256")
+        .output()
+    {
         report.push_str("--- WIREPLUMBER / PIPEWIRE STATUS ---\n");
         report.push_str(&String::from_utf8_lossy(&out.stdout));
         report.push_str("\n\n");

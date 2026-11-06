@@ -961,9 +961,18 @@ pub fn run_gtk(tracker: Tracker) {
                         if dlg.run() == gtk::ResponseType::Accept {
                             if let Some(p) = dlg.filename() {
                                 if let Some(p_str) = p.to_str() {
+                                    let dest_path = crate::database::icons_dir_path()
+                                        .join(format!("{}.png", crate::database::sanitize_id_stem(&mac_ph)));
+                                    let saved_path = if let Ok(pb) = gdk_pixbuf::Pixbuf::from_file_at_scale(p_str, 64, 64, true) {
+                                        let _ = pb.savev(&dest_path, "png", &[]);
+                                        dest_path.to_str().unwrap_or(p_str).to_string()
+                                    } else {
+                                        let _ = std::fs::copy(&p, &dest_path);
+                                        dest_path.to_str().unwrap_or(p_str).to_string()
+                                    };
                                     let mut tr = tracker_ph.borrow_mut();
                                     if let Some(d) = tr.db.devices.get_mut(&mac_ph) {
-                                        d.custom_image = Some(p_str.to_string());
+                                        d.custom_image = Some(saved_path);
                                     }
                                     tr.save_db();
                                 }
@@ -1584,7 +1593,11 @@ pub fn run_gtk(tracker: Tracker) {
             let poll = tracker.borrow().db.settings.poll_interval.max(1);
             if elapsed_sec >= poll {
                 elapsed_sec = 0;
-                tracker.borrow_mut().tick(false);
+                if crate::database::is_daemon_active() {
+                    tracker.borrow_mut().sync_from_disk();
+                } else {
+                    tracker.borrow_mut().tick(false);
+                }
                 refresh();
             }
             glib::ControlFlow::Continue

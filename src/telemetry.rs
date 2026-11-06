@@ -416,15 +416,139 @@ pub fn query_all_audio_devices(track_wired_usb: bool) -> BTreeMap<String, Detect
 }
 
 pub fn is_audio_playing() -> bool {
-    Command::new("playerctl")
-        .args(["-a", "status"])
+    // 1. Inspección de wpctl status con ancho extendido para evitar truncado en systemd
+    if let Ok(out) = Command::new("wpctl")
+        .arg("status")
+        .env("COLUMNS", "256")
         .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .any(|l| l.trim() == "Playing")
-        })
-        .unwrap_or(false)
+    {
+        let txt = String::from_utf8_lossy(&out.stdout);
+        let mut in_audio = false;
+        let mut in_streams = false;
+        for line in txt.lines() {
+            let trimmed = line.trim();
+            if trimmed == "Audio" {
+                in_audio = true;
+                in_streams = false;
+                continue;
+            }
+            if trimmed == "Video" || trimmed.starts_with("Settings") {
+                in_audio = false;
+                in_streams = false;
+                continue;
+            }
+            if in_audio {
+                if trimmed.contains("Streams:") {
+                    in_streams = true;
+                    continue;
+                }
+                if in_streams {
+                    let low = trimmed.to_lowercase();
+                    if low.contains("[active]") || low.contains("[running]") {
+                        return true;
+                    }
+                    if low.contains('>')
+                        && !low.contains("[paused]")
+                        && !low.contains("[init]")
+                        && !low.contains("[standby]")
+                        && !low.contains("[idle]")
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Inspección directa del grafo JSON de PipeWire (captura OpenAL, SDL2, Wine/Proton y nativos)
+    if let Ok(out) = Command::new("pw-dump").arg("Node").output() {
+        if let Ok(nodes) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+            if let Some(arr) = nodes.as_array() {
+                for node in arr {
+                    if let Some(info) = node.get("info") {
+                        let state = info.get("state").and_then(|s| s.as_str()).unwrap_or("");
+                        if state.eq_ignore_ascii_case("running") {
+                            if let Some(props) = info.get("props") {
+                                let m_class = props
+                                    .get("media.class")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let m_cat = props
+                                    .get("media.category")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let n_name = props
+                                    .get("node.name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_lowercase();
+
+                                if m_class.starts_with("Stream/Output/Audio") {
+                                    return true;
+                                }
+                                if m_cat.eq_ignore_ascii_case("Playback")
+                                    && !m_class.contains("Input")
+                                    && !m_class.contains("Video")
+                                {
+                                    return true;
+                                }
+                                if n_name.starts_with("alsa_playback.")
+                                    || n_name.contains("wine")
+                                    || n_name.contains("proton")
+                                    || n_name.contains("openal")
+                                    || n_name.contains("sdl")
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Respaldo PulseAudio / WinePulse (pactl list sink-inputs)
+    if let Ok(out) = Command::new("pactl")
+        .args(["list", "sink-inputs"])
+        .env("LC_ALL", "C")
+        .output()
+    {
+        let txt = String::from_utf8_lossy(&out.stdout);
+        for block in txt.split("Sink Input #").skip(1) {
+            if block.contains("Corked: no") && !block.contains("Mute: yes") {
+                return true;
+            }
+        }
+    }
+
+    // 4. Verificación directa en el kernel ALSA (/proc/asound/card*/pcm*p/sub*/status)
+    if let Ok(cards) = std::fs::read_dir("/proc/asound") {
+        for card in cards.flatten() {
+            let cname = card.file_name().to_string_lossy().to_string();
+            if cname.starts_with("card") {
+                if let Ok(pcms) = std::fs::read_dir(card.path()) {
+                    for pcm in pcms.flatten() {
+                        let pname = pcm.file_name().to_string_lossy().to_string();
+                        if pname.starts_with("pcm") && pname.ends_with('p') {
+                            if let Ok(subs) = std::fs::read_dir(pcm.path()) {
+                                for sub in subs.flatten() {
+                                    let st_path = sub.path().join("status");
+                                    if let Ok(st) = std::fs::read_to_string(st_path) {
+                                        if st.contains("state: RUNNING") {
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 pub fn service_path() -> PathBuf {
