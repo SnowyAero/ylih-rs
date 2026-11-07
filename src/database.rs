@@ -255,6 +255,23 @@ impl Tracker {
         }
     }
 
+    #[allow(dead_code)]
+        pub fn set_custom_image(&mut self, id: &str, path: String) {
+        if let Some(dev) = self.db.devices.get_mut(id) {
+            dev.custom_image = Some(path);
+        }
+        self.save_db();
+    }
+
+    pub fn clear_custom_image(&mut self, id: &str) {
+            if let Some(dev) = self.db.devices.get_mut(id) {
+                dev.custom_image = None;
+            }
+            let icon_path = icons_dir_path().join(format!("{}.png", sanitize_id_stem(id)));
+            let _ = fs::remove_file(icon_path);
+            self.save_db();
+        }
+
     pub fn delete_device(&mut self, id: &str) -> Result<(), String> {
         if let Some(dev) = self.db.devices.get(id) {
             if dev.currently_connected {
@@ -421,9 +438,7 @@ impl Tracker {
             if fpath.exists() {
                 if let Ok(content) = fs::read_to_string(&fpath) {
                     if let Ok(disk_dev) = serde_json::from_str::<DeviceRecord>(&content) {
-                        if disk_dev.custom_image.is_some() {
-                            dev.custom_image = disk_dev.custom_image;
-                        }
+                        dev.custom_image = disk_dev.custom_image;
                     }
                 }
             } else if !initial && !dev.currently_connected {
@@ -635,7 +650,7 @@ pub fn write_debug_log(path: &PathBuf) -> std::io::Result<()> {
         let _ = fs::create_dir_all(parent);
     }
     let mut report = String::new();
-    report.push_str("=== YLIH-RS v2.2.0-preview3 DEBUG REPORT ===\n");
+    report.push_str("=== YLIH-RS v2.2.0-preview4 DEBUG REPORT ===\n");
     report.push_str(&format!("Fecha: {}\n\n", Local::now()));
 
     let db_tmp = Tracker::load_modular_db();

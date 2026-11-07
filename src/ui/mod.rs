@@ -1,3 +1,4 @@
+pub mod avatar_customization;
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod gtk_app;
 pub mod tui_app;

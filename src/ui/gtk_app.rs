@@ -392,6 +392,212 @@ fn show_session_details_dialog(
     }
 }
 
+
+#[allow(dead_code)]
+    
+
+fn crop_and_save_avatar<W: glib::IsA<gtk::Window>>(
+    parent: Option<&W>,
+    src_path: &str,
+    dest_path: &std::path::Path,
+) -> Option<String> {
+    let orig_pb = gdk_pixbuf::Pixbuf::from_file(src_path).ok()?;
+    let ow = orig_pb.width() as f64;
+    let oh = orig_pb.height() as f64;
+    if ow <= 1.0 || oh <= 1.0 {
+        return None;
+    }
+
+    let dlg = gtk::Dialog::with_buttons(
+        Some("Ajustar foto de perfil del auricular"),
+        parent,
+        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        &[
+            ("Cancelar", gtk::ResponseType::Cancel),
+            ("Guardar icono", gtk::ResponseType::Accept),
+        ],
+    );
+    dlg.set_type_hint(gdk::WindowTypeHint::Dialog);
+    dlg.set_resizable(false);
+    dlg.set_position(gtk::WindowPosition::Center);
+    dlg.set_default_size(340, 410);
+
+    let content = dlg.content_area();
+    content.set_spacing(10);
+    content.set_margin_top(14);
+    content.set_margin_bottom(14);
+    content.set_margin_start(14);
+    content.set_margin_end(14);
+
+    let hint = gtk::Label::new(Some("Arrastra la imagen para encuadrar y ajusta el zoom:"));
+    content.pack_start(&hint, false, false, 0);
+
+    let view_size = 240.0;
+    let base_scale = (view_size / ow).max(view_size / oh);
+    let state = std::rc::Rc::new(std::cell::RefCell::new((1.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, false)));
+
+    let area = gtk::DrawingArea::new();
+    area.set_size_request(view_size as i32, view_size as i32);
+    area.set_halign(gtk::Align::Center);
+    area.add_events(
+        gdk::EventMask::BUTTON_PRESS_MASK
+            | gdk::EventMask::BUTTON_RELEASE_MASK
+            | gdk::EventMask::POINTER_MOTION_MASK
+            | gdk::EventMask::SCROLL_MASK,
+    );
+
+    let pb_draw = orig_pb.clone();
+    let st_draw = state.clone();
+    area.connect_draw(move |_, cr| {
+        let (zoom, px, py, _, _, _) = *st_draw.borrow();
+        let scale = base_scale * zoom;
+        let sw = ow * scale;
+        let sh = oh * scale;
+
+        let max_px = ((sw - view_size) / 2.0).max(0.0);
+        let max_py = ((sh - view_size) / 2.0).max(0.0);
+        let cx = px.clamp(-max_px, max_px);
+        let cy = py.clamp(-max_py, max_py);
+
+        let draw_x = (view_size - sw) / 2.0 + cx;
+        let draw_y = (view_size - sh) / 2.0 + cy;
+
+        cr.set_source_rgb(0.09, 0.09, 0.11);
+        let _ = cr.paint();
+
+        cr.save().ok();
+        cr.translate(draw_x, draw_y);
+        cr.scale(scale, scale);
+        cr.set_source_pixbuf(&pb_draw, 0.0, 0.0);
+        let _ = cr.paint();
+        cr.restore().ok();
+
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.55);
+        cr.rectangle(0.0, 0.0, view_size, view_size);
+        cr.arc(view_size / 2.0, view_size / 2.0, view_size * 0.44, 0.0, std::f64::consts::PI * 2.0);
+        cr.set_fill_rule(cairo::FillRule::EvenOdd);
+        let _ = cr.fill();
+        cr.set_fill_rule(cairo::FillRule::Winding);
+
+        cr.set_source_rgba(0.96, 0.25, 0.37, 0.90);
+        cr.set_line_width(2.2);
+        cr.arc(view_size / 2.0, view_size / 2.0, view_size * 0.44, 0.0, std::f64::consts::PI * 2.0);
+        let _ = cr.stroke();
+
+        glib::Propagation::Proceed
+    });
+
+    let st_press = state.clone();
+    area.connect_button_press_event(move |_, ev| {
+        if ev.button() == 1 {
+            let (x, y) = ev.position();
+            let mut s = st_press.borrow_mut();
+            s.3 = x - s.1;
+            s.4 = y - s.2;
+            s.5 = true;
+        }
+        glib::Propagation::Proceed
+    });
+
+    let st_rel = state.clone();
+    area.connect_button_release_event(move |_, ev| {
+        if ev.button() == 1 {
+            st_rel.borrow_mut().5 = false;
+        }
+        glib::Propagation::Proceed
+    });
+
+    let st_mot = state.clone();
+    let area_mot = area.clone();
+    area.connect_motion_notify_event(move |_, ev| {
+        let mut s = st_mot.borrow_mut();
+        if s.5 {
+            let (x, y) = ev.position();
+            let scale = base_scale * s.0;
+            let max_px = ((ow * scale - view_size) / 2.0).max(0.0);
+            let max_py = ((oh * scale - view_size) / 2.0).max(0.0);
+            s.1 = (x - s.3).clamp(-max_px, max_px);
+            s.2 = (y - s.4).clamp(-max_py, max_py);
+            area_mot.queue_draw();
+        }
+        glib::Propagation::Proceed
+    });
+
+    content.pack_start(&area, false, false, 4);
+
+    let zoom_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let zoom_lbl = gtk::Label::new(Some("🔍 Zoom:"));
+    let zoom_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 1.0, 4.0, 0.05);
+    zoom_scale.set_value(1.0);
+    zoom_scale.set_hexpand(true);
+
+    let st_zoom = state.clone();
+    let area_zoom = area.clone();
+    zoom_scale.connect_value_changed(move |sc| {
+        let z = sc.value();
+        let mut s = st_zoom.borrow_mut();
+        s.0 = z;
+        let scale = base_scale * z;
+        let max_px = ((ow * scale - view_size) / 2.0).max(0.0);
+        let max_py = ((oh * scale - view_size) / 2.0).max(0.0);
+        s.1 = s.1.clamp(-max_px, max_px);
+        s.2 = s.2.clamp(-max_py, max_py);
+        area_zoom.queue_draw();
+    });
+
+    let scale_scroll = zoom_scale.clone();
+    area.connect_scroll_event(move |_, ev| {
+        let cur = scale_scroll.value();
+        match ev.direction() {
+            gdk::ScrollDirection::Up => scale_scroll.set_value((cur + 0.12).min(4.0)),
+            gdk::ScrollDirection::Down => scale_scroll.set_value((cur - 0.12).max(1.0)),
+            _ => {}
+        }
+        glib::Propagation::Proceed
+    });
+
+    zoom_box.pack_start(&zoom_lbl, false, false, 0);
+    zoom_box.pack_start(&zoom_scale, true, true, 0);
+    content.pack_start(&zoom_box, false, false, 0);
+
+    dlg.show_all();
+    let resp = dlg.run();
+    unsafe { dlg.destroy(); }
+
+    if resp == gtk::ResponseType::Accept {
+        let (zoom, px, py, _, _, _) = *state.borrow();
+        let scale = base_scale * zoom;
+        let sw = ow * scale;
+        let sh = oh * scale;
+        let max_px = ((sw - view_size) / 2.0).max(0.0);
+        let max_py = ((sh - view_size) / 2.0).max(0.0);
+        let cx = px.clamp(-max_px, max_px);
+        let cy = py.clamp(-max_py, max_py);
+        let draw_x = (view_size - sw) / 2.0 + cx;
+        let draw_y = (view_size - sh) / 2.0 + cy;
+
+        let out_size = 96;
+        if let Ok(surf) = cairo::ImageSurface::create(cairo::Format::ARgb32, out_size, out_size) {
+            if let Ok(cr) = cairo::Context::new(&surf) {
+                let ratio = out_size as f64 / view_size;
+                cr.scale(ratio, ratio);
+                cr.translate(draw_x, draw_y);
+                cr.scale(scale, scale);
+                cr.set_source_pixbuf(&orig_pb, 0.0, 0.0);
+                let _ = cr.paint();
+            }
+            if let Some(cropped_pb) = gdk::pixbuf_get_from_surface(&surf, 0, 0, out_size, out_size) {
+                if cropped_pb.savev(dest_path, "png", &[]).is_ok() {
+                    return dest_path.to_str().map(|s| s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+
+
 pub fn run_gtk(tracker: Tracker) {
     gtk::init().expect("Error inicializando GTK3");
     let tracker = Rc::new(RefCell::new(tracker));
@@ -481,6 +687,9 @@ pub fn run_gtk(tracker: Tracker) {
     tab3_hdr.pack_start(&tab3_lbl, false, false, 0);
     tab3_hdr.show_all();
     notebook.append_page(&tab_settings, Some(&tab3_hdr));
+    let misc_tab = crate::ui::avatar_customization::build_misc_tab(&tracker);
+    let misc_tab_lbl = gtk::Label::new(Some("🎨 Miscelánea"));
+    notebook.append_page(&misc_tab, Some(&misc_tab_lbl));
 
     let grid = gtk::Grid::new();
     grid.set_column_spacing(20);
@@ -1043,7 +1252,7 @@ pub fn run_gtk(tracker: Tracker) {
                 }
 
                 hdr_container.pack_end(&btn_del, false, false, 0);
-                hdr_container.pack_end(&btn_photo, false, false, 0);
+                // Movido a Miscelánea: hdr_container.pack_end(&btn_photo, false, false, 0);
                 hdr_container.show_all();
                 frame.set_label_widget(Some(&hdr_container));
 
